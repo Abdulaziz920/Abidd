@@ -1,0 +1,91 @@
+pipeline {
+    agent any
+
+    tools {
+        maven 'maven-3.9' // Your Maven tool
+    }
+
+    environment {
+        SONAR_SERVER = 'sonar-scanner'         // SonarQube server configured in Jenkins
+        NEXUS_CREDENTIALS = 'Nexux_server'     // Jenkins credentials ID for Nexus
+        NEXUS_URL = 'http://3.93.164.154:8081/repository/Jenkins-04-Task-1/' // Nexus repository URL
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git url: 'https://github.com/bcreddydevops/chinna-app.git', branch: 'main'
+            }
+        }
+
+        stage('Build Code') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv("${env.SONAR_SERVER}") {
+                    sh 'mvn sonar:sonar'
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                script {
+                    timeout(time: 10, unit: 'MINUTES') {
+                        def qg = waitForQualityGate(abortPipeline: true, pollInterval: 5)
+                        if (qg.status != 'OK') {
+                            error "Pipeline aborted due to SonarQube Quality Gate failure: ${qg.status}"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Upload War to Nexus') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: "${env.NEXUS_CREDENTIALS}", usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
+                    nexusArtifactUploader artifacts: [
+                        [
+                            artifactId: 'devops',
+                            classifier: '',
+                            file: 'target/hiring.war',
+                            type: 'war'
+                        ]
+                    ],
+                    credentialsId: "${env.NEXUS_CREDENTIALS}",
+                    groupId: 'in.javahome',
+                    nexusUrl: '3.93.164.154:8081',
+                    nexusVersion: 'nexus3',
+                    protocol: 'http',
+                    repository: 'Jenkins-04-Task-1',
+                    version: '0.0.1'
+                }
+            }
+        }
+
+        stage('Deploy War to Tomcat') {
+            steps {
+                sshagent(['tomcat-credentials']) {
+                    sh '''
+                        scp -o StrictHostKeyChecking=no target/*.war ubuntu@54.173.252.57:/opt/apache-tomcat-9.0.72/webapps
+                        ssh -o StrictHostKeyChecking=no ubuntu@54.173.252.57 /opt/apache-tomcat-9.0.72/bin/shutdown.sh
+                        ssh -o StrictHostKeyChecking=no ubuntu@54.173.252.57 /opt/apache-tomcat-9.0.72/bin/startup.sh
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Pipeline executed successfully and deployed to Nexus & Tomcat!'
+        }
+        failure {
+            echo '❌ Pipeline failed. Please check the logs.'
+        }
+    }
+}
